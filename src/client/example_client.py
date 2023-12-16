@@ -3,8 +3,6 @@ import base64
 import hashlib
 from cryptography.fernet import Fernet
 import json
-import asyncio
-import websockets
 
 def pad_key(key):
     sha256 = hashlib.sha256()
@@ -102,16 +100,3 @@ print("Registration Response:", registration_response)
 print("\nAttempting login ...")
 login_response = login_user(base_url, token, decrypted_secure_shared_secret, user_data["username"], user_data["password"])
 print("Login Response:", login_response)
-
-async def connect_to_server(uri):
-    async with websockets.connect(uri) as websocket:
-        # Sending a test message to the server
-        await websocket.send("Hello server!")
-        # Waiting for a response
-        response = await websocket.recv()
-        print("Response from server:", response)
-
-# Start WebSocket communication
-jwt_token = login_response["data"].get('access_token')  # Assume this is your JWT token obtained after login
-server_uri = f"ws://127.0.0.1:5000/?token={token}&jwt_token={jwt_token}"
-asyncio.run(connect_to_server(server_uri))

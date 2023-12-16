@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 from flask import Flask, request, jsonify, render_template, send_from_directory, g
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt, decode_token
-from flask_socketio import SocketIO, emit, join_room, leave_room
 from aplustools.io import environment as env
 from typing import Dict
 import datetime
@@ -9,7 +8,6 @@ import sqlite3
 import secrets
 import uuid
 import json
-import ssl
 import sys
 import re
 import os
@@ -41,14 +39,12 @@ app = Flask(__name__)
 app.config['JWT_SECRET_KEY'] = 'your_secret_key'
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = datetime.timedelta(hours=24)
 jwt = JWTManager(app)
-socketio = SocketIO(app, manage_session=True)
 
 # Initialize the database
 init_db('application.db', app)
 db = Database('application.db', app)
 
 # Local Storage
-user_sessions: Dict[str, str] = {} # Store all currently logged in users
 client_secrets: Dict[str, list] = {} # Dictionary to store client tokens and their corresponding secrets
 file_indices: Dict[int, list] = {19246192: ['./', 'application.db']} # Dictionary to store file paths
 
@@ -58,7 +54,7 @@ file_indices: Dict[int, list] = {19246192: ['./', 'application.db']} # Dictionar
 #
 def response(message: str, status: int=200, error: bool=False, data: dict=None) -> str:
     payload = {'status': 'error' if error else 'success', 'message': message}
-    if data is not None:
+    if data is not None: # Move encryption to here and make another function for receiving responses and testing the standard stuff like tokens.
         payload['data'] = data
     return jsonify(payload), status
 
@@ -241,6 +237,36 @@ def login():
     else:
         return render_template('site_not_found.html')
 
+# JWT protected registration route
+@app.route('/create_account', methods=['GET', 'POST'])
+@jwt_required()
+def create_account():
+    if request.method == "POST":
+        # Retrieve the token from the client request
+        token = request.args.get('token')
+        current_user_identity = get_jwt_identity()
+        
+        client_secret_data = db.get_client_secrets_by_token(token)
+        
+        user_id = client_secret_data.get("user_id")
+        
+        user = db.get_user_by_id(user_id)
+        if not user["username"] == current_user_identity:
+            return response("Token identities do not match", 400, True)
+        secure_shared_secret = client_secret_data.get("secure_shared_secret")
+        encrypted_data = request.json
+        
+        decrypted_data = decrypt(secure_shared_secret, encrypted_data)
+        
+        data = json.loads(decrypted_data)
+        
+        data["birth_date"] = datetime.datetime.strptime(data["birth_date"], "%Y.%m.%d")
+        
+        db.create_account(user_id, **data)
+        
+    else:
+        return render_template('site_not_found.html')
+
 #
 # Small section 4.5 unprotected routes
 #
@@ -264,7 +290,7 @@ def check_if_token_is_revoked(jwt_header, jwt_payload: dict):
     return db.jti_in_blocklist(jti)
 
 @app.route('/revoke_token')
-@jwt_required
+@jwt_required()
 def revoke_token(): # JWT token
     # Retrieve the token from the client request
     token = request.args.get('token')
@@ -312,83 +338,93 @@ def select_event():
 
 #
 # Section 6
-# Web sockets
+# "Web socket" routes
 #
-@socketio.on('connect')
-def handle_connect():
-    # Retriever tokens from the query parameters
-    print("HERE")
-    token = request.args.get('token')
-    jwt_token = request.args.get('jwt_token')
-    print(token, jwt_token)
-    if token and jwt_token:
-        try:
-            client_secrets = db.get_client_secrets_by_token(token)
-            if not client_secrets:
-                raise ValueError("Invalid client token")
+@app.route('/sync', methods=['GET', 'POST'])
+def sync():
+    if request.method == "POST":
+        token = request.args.get('token')
+        current_user_identity = get_jwt_identity()
+        
+        client_secrets = db.get_client_secrets_by_token(token)
+        
+        user_id = client_secrets.get("user_id")
+        
+        user = db.get_user_by_id(user_id)
+        if not user["username"] == current_user_identity:
+            return response("Token identities do not match", 400, True)
+        secure_shared_secret = client_secrets.get("secure_shared_secret")
+        encrypted_data = response.json
+        decrypted_data = decrypt(secure_shared_secret, encrypted_data)
+        data = json.loads(decrypted_data)
+        
+        account_last_modified, account_hash = data["account"]
+        details_last_modified, details_hash = data["details"]
+        settings_last_modified, settings_hash = data["settings"]
+        
+        response_data: Dict[str, dict] = {}
+        
+        # Look if all are the same as the current data, if not return the ones that don't match
+        account = db.get_account_by_user_id(user_id)
+        if account_last_modified != account.get("last_modified") or account_hash != account_hash: # Didn't implement local account_hashing yet
+            response_data["account"] = account
+        
+        account_type = account.get("account_type")
+        account_id = account.get("id")
+        if account_type == "Student":
+            details = db.get_student_details(account_id)
+        elif account_type == "Teacher":
+            details = db.get_all_teacher_details(account_id)
+        elif account_type == "Employee":
+            details = db.get_all_employee_details(account_id)
+        else:
+            pass # Not possible due to check in database
             
-            # Decode and verify the JWT
-            decoded_jwt = decode_token(jwt_token)
-            jwt_identity = decoded_jwt['identity']
+        if details_last_modified != details.get("last_modified") or details_hash != details_hash:
+            response_data["details"] = details
             
-            # Check if identities match
-            if db.get_user_by_id(client_secrets["user_id"])["username"] == jwt_identity:
-                user_sessions[jwt_identity] = request.sid
-                join_room(jwt_identity) # Join a room specific to the user
-                print(f'User {jwt_identity} connected with SID {request.sid}')
-            else:
-                raise ValueError("Token identities do not match")
-        except Exception as e:
-            print(f"Error with tokens {e}")
-            return False # Disconnect
+        settings = db.get_settings(account_id)
+        if settings_last_modified != settings.get("last_modified") or settings_hash != settings_hash:
+            response_data["settings"] = settings
+        
+        return response("Sync successful", 200, False, response_data)
     else:
-        print(1)
-        return False # Disconnect
-    
-@socketio.on('disconnect')
-def handle_disconnect():
-    for user_identity, sid in user_sessions.items():
-        if sid == request.sid:
-            leave_room(user_identity)
-            del user_sessions[user_identity]
-            print(f"User {user_identity} disconnected")
-            break
+        return render_template('site_not_found.html')
 
-@socketio.on('notification_response')
-def handle_notification_response(data):
-    notification_id = data['id']
-    user_response = data['response']
+@app.route('/check_for_user_updates', methods=['GET', 'POST'])
+@jwt_required()
+def check_for_user_updates():
+    if request.method == "POST":
+        token = request.args.get('token')
+        current_user_identity = get_jwt_identity()
+        
+        client_secrets = db.get_client_secrets_by_token(token)
+        
+        user_id = client_secrets.get("user_id")
+        
+        user = db.get_user_by_id(user_id)
+        if not user["username"] == current_user_identity:
+            return response("Token identities do not match", 400, True)
+        secure_shared_secret = client_secrets.get("secure_shared_secret")
 
-    # Process the response
-    # For example, update the database or trigger another action based on the response
-    #process_notification_response(notification_id, user_response)
+        # Check for new notifications
+        notifications = db.get_unseen_notifications(user_id)
+        return response("Checked", 200, False, {"notifications": notifications})
+    else:
+        return render_template('site_not_found.html')
 
 #
 # Section 7
-# Real time functions
+# "Real time" functions
 #
-def server_side_sync(user_id, updated_data):
-    identity = db.get_user_by_id(user_id)["username"]
-    # Notify the specific user about the update
-    socketio.emit("data_update", {"data": updated_data}, room=identity)
-    
 def notify_client(user_id, notification_data):
-    # notification data should contain title, message and what type (question, info, error or warning)
-    # question yes | no ; info ok ; error ok ; warning ignore | continue | cancel
-    
-    notification_id = str(uuid.uuid4())
-    
-    notification_data = {
-        "title": "New Message",
-        "message": "You have received a new message.",
-        "type": "info",  # Could be "question", "info", "error", "warning"
-        "actions": ["ok"],  # Could be ["yes", "no"], ["ignore", "continue", "cancel"]
-    }
-    
-    identity = db.get_user_by_id(user_id)["username"]
-    
-    notification_data['id'] = notification_id
-    socketio.emit("notification", {"data": notification_data}, room=identity)
+    notification_id = db.create_notification(
+        user_id, 
+        notification_data["title"], 
+        notification_data["message"], 
+        notification_data["type"], 
+        notification_data.get("actions", ["ok"])
+    )
     return notification_id
 
 #
@@ -413,4 +449,4 @@ if __name__ == "__main__":
     app.logger.info("Starting server ...")
     #ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     #ssl_context.load_cert_chain('cert/localhost.pem', 'cert/localhost-key.pem')
-    socketio.run(app, debug=True)#, ssl_context=ssl_context) # 'adhoc'
+    app.run(debug=True, ssl_context='adhoc')
