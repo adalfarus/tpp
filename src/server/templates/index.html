@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container">
+    <div class="logo">
+        <img src="{{ url_for('static', filename='logo-bgr.png') }}" alt="TPP Logo">
+    </div>
+    <h1>Tutoring Placement Program (TPP)</h1>
+    <div class="buttons">
+        <a href="/download-file/19246192" class="btn" id="download-btn">Download Client</a>
+        <a href="/?try_it_out=1" class="btn" id="try-btn">Try It Out</a>
+    </div>
+</div>
+{% endblock %}

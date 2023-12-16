@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tutoring Placement Program</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <div class="icon">
+            <img src="{{ url_for('static', filename='icon-bgr.png') }}" alt="TPP Icon">
+        </div>
+        <div class="header-right">
+            <a href="/">Home</a>
+            <!-- Add more navigation items if needed -->
+        </div>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <p>© 2023 Tutoring Placement Program. All rights reserved.</p>
+    </footer>
+</body>
+</html>
