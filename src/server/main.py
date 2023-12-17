@@ -159,6 +159,45 @@ def get_secure_shared_secret():
 # Section 4
 # User registration routes (Only POST)
 #
+@app.route('/low_register', methods=['GET', 'POST'])
+def low_register():
+    if request.method == "POST":
+        # Retrieve the token from the client request
+        token = request.args.get('token')
+        # Retrieve the secure shared secret associated with this token
+        secure_shared_secret = client_secrets.get(token, [None, None, None])[2]
+        
+        if secure_shared_secret:
+            encrypted_data = request.json.get('encrypted_data')
+            decrypted_data = decrypt(secure_shared_secret, encrypted_data)
+            
+            user_data = json.loads(decrypted_data)
+            username = user_data.get('username')
+            email = user_data.get('email')
+            encrypted_password = user_data.get('encrypted_password')
+            password = decrypt(secure_shared_secret, encrypted_password)
+            
+            user = db.get_user_by_username(username)
+            user_id = user.get("id")
+            
+            print("SAAAAAAAAAAAAAAAAALT", user.get("salt"), password)
+            hashed_password, _ = hash_password(password, user.get("salt"))
+            
+            if hashed_password != user.get("password_hash"):
+                return response("Username and password do not match", 400, True)
+            
+            try:
+                # Store client data in the database
+                db.create_client_secrets(user_id, token, *client_secrets.get(token, [None, None, None]))
+                client_secrets[token] = "USED"
+                return response("Low-Registered client", 200)
+            except Exception as e:
+                return response(f"Unknown error {e}", 400, True)
+        else:
+            return response("Invalid token", 400, True)
+    else:
+        return render_template('site_not_found.html')
+
 @app.route('/register', methods=['GET', 'POST'])
 def register(): # Handle registration logic
     if request.method == "POST":
@@ -254,16 +293,31 @@ def create_account():
         if not user["username"] == current_user_identity:
             return response("Token identities do not match", 400, True)
         secure_shared_secret = client_secret_data.get("secure_shared_secret")
-        encrypted_data = request.json
+        encrypted_data = request.json.get("encrypted_data")
         
         decrypted_data = decrypt(secure_shared_secret, encrypted_data)
         
         data = json.loads(decrypted_data)
         
-        data["birth_date"] = datetime.datetime.strptime(data["birth_date"], "%Y.%m.%d")
+        data["birth_date"] = datetime.datetime.strptime(data["birth_date"], "%Y.%m.%d").date()
         
-        db.create_account(user_id, **data)
+        try:
+            db.create_account(user_id, **data)
+        except sqlite3.IntegrityError as e:
+            # Check for unique constraint failure
+            if "UNIQUE constraint failed: Accounts.user_id" in str(e):
+                return response("Account already exists", 400, True)
+            elif "UNIQUE constraint failed: StudentDetails.account_id" in str(e):
+                return response("Student Details already exists", 400, True)
+            elif "UNIQUE constraint failed: TeacherDetails.account_id" in str(e):
+                return response("Teacher Details already exists", 400, True)
+            elif "UNIQUE constraint failed: EmployeeDetails.account_id" in str(e):
+                return response("Employee Details already exists", 400, True)
+            else:
+                # Handle other integrity errors
+                return response(f"Database error: {str(e)}", 500, True)
         
+        return response("Created account", 200)
     else:
         return render_template('site_not_found.html')
 
@@ -287,7 +341,7 @@ def find_matches_public(): # For the try_it_out site
 @jwt.token_in_blocklist_loader # Automatically check if token has been blocked or revoked
 def check_if_token_is_revoked(jwt_header, jwt_payload: dict):
     jti = jwt_payload["jti"]
-    return db.jti_in_blocklist(jti)
+    return db.jti_revoked(jti)
 
 @app.route('/revoke_token')
 @jwt_required()

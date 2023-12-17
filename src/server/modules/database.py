@@ -54,14 +54,14 @@ def init_db(db_path: str, app):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS Accounts (
                 id INTEGER PRIMARY KEY,
-                user_id INTEGER,
+                user_id INTEGER UNIQUE NOT NULL,
                 account_type TEXT CHECK(account_type IN ('Student', 'Teacher', 'Employee')), -- Values: 'Student', 'Teacher', 'Employee'
                 first_name TEXT,
                 last_name TEXT,
                 email TEXT,
                 phone TEXT,
                 address TEXT,
-                birth_date DATETIME,
+                birth_date DATE,
                 gender TEXT,
                 last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES Users(id)
@@ -75,7 +75,7 @@ def init_db(db_path: str, app):
         """Create the StudentDetails table."""
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS StudentDetails (
-                account_id INTEGER,
+                account_id INTEGER PRIMARY KEY,
                 grade_level TEXT,
                 school_type TEXT,
                 school_name TEXT,
@@ -92,14 +92,14 @@ def init_db(db_path: str, app):
         """Create the TeacherDetails table."""
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS TeacherDetails (
-                account_id INTEGER,
+                account_id INTEGER PRIMARY KEY,
                 subjects TEXT,
                 grade_levels TEXT,
                 school_types TEXT,
                 gender_preference TEXT,
                 fee_range TEXT,
                 registration_fee_paid BOOLEAN,
-                last_payment_date DATETIME,
+                last_payment_date DATE,
                 event_ids TEXT, -- JSON or comma-separated list of Event IDs
                 average_review REAL, -- Average rating
                 available_times TEXT,
@@ -112,7 +112,7 @@ def init_db(db_path: str, app):
         """Create the EmployeeDetails table."""
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS EmployeeDetails (
-                account_id INTEGER,
+                account_id INTEGER PRIMARY KEY,
                 rank TEXT,
                 department TEXT,
                 last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -214,7 +214,10 @@ def with_db_connection(f):
         try:
             return f(instance, db, *args, **kwargs)
         except Exception as e:
+            db.close()
             raise e
+        else:
+            db.close()
     return decorated_function
 
 class Database:
@@ -304,7 +307,7 @@ class Database:
         cursor = db.cursor()
         cursor.execute("""
             INSERT INTO ClientSecrets (user_id, token, weak_shared_secret, shared_secret, secure_shared_secret, last_accessed, created_at) 
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (user_id, token, weak_secret, shared_secret, secure_shared_secret, datetime.datetime.now(), datetime.datetime.now()))
         db.commit()
         
@@ -340,9 +343,11 @@ class Database:
                        (user_id, account_type, first_name, last_name, email, phone, address, birth_date, gender, datetime.datetime.now()))
         account_id = cursor.lastrowid
         
+        cursor.execute(f"UPDATE Users SET account_id = ? WHERE id = ?", (account_id, user_id))
+        
         # Insert into specific details table
         detail_columns = list(detail_info.keys())
-        detail_values = [account_id] + detail_info.values()
+        detail_values = [account_id] + list(detail_info.values())
         if account_type.title() == 'Student':
             cursor.execute(f"INSERT INTO StudentDetails (account_id, {', '.join(detail_columns)}, last_modified) VALUES (?, {', '.join(['?' for _ in detail_columns])}, ?)", detail_values + [datetime.datetime.now()])
         elif account_type.title() == 'Teacher':
@@ -570,7 +575,7 @@ class Database:
         cursor = db.cursor()
         cursor.execute("SELECT revoked, expires_at FROM JWTStorage WHERE jti = ?", (jti,))
         row = cursor.fetchone()
-        if row and row["expires_at"] > datetime.datetime.now():
+        if row and datetime.datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S") > datetime.datetime.now():
             return row['revoked']
         return False
     
