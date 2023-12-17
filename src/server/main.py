@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from flask import Flask, request, jsonify, render_template, send_from_directory, g
+from flask import Flask, request, jsonify, render_template, send_from_directory, g, redirect
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt, decode_token
 from aplustools.io import environment as env
 from typing import Dict
@@ -89,6 +89,16 @@ def download_file(file_index):
         file_path = file_indices[file_index]
         return send_from_directory(directory=file_path[0], path=file_path[1])
     return render_template('file_not_found.html')
+
+@app.route('/auth/callback')
+def auth_callback():
+    code = request.args.get("code")
+    print(f"Received auth code {code}")
+    return redirect('/auth')
+
+@app.route('/auth')
+def auth():
+    return render_template('auth_done.html')
 
 #
 # Section 3
