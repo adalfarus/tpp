@@ -1,6 +1,5 @@
 from aplustools.io.loggers import LogType, TypeLogger
 from aplustools.utils.mappers import reverse_map
-from aplustools.data.database import DBManager
 from aplustools.io import environment as env
 from typing import Optional, List
 from pathlib import Path
@@ -16,6 +15,7 @@ import os
 from modules.classes import classes_init
 from modules.gui import gui_init, TppGui
 from modules.themes import themes_init
+from modules.database import DatabaseManager
 
 env.set_working_dir_to_main_script_location()
 __cwd__ = os.getcwd()
@@ -94,29 +94,15 @@ class MainApp:
         #self.gui.changed.connect(self.check_changes)
         db_path = ".\\data.db"
         self.new = not os.path.isfile(db_path)
-        self.db = DBManager(db_path)
+        self.db = DatabaseManager(db_path)
         self.start_gui()
-        #self.settings = Settings(self.new, self.db, {"test": "False"})
-        #self.settings.set_test(True)
-        #log(self.settings.get_test())
         
     def start_gui(self):
-        app, gui = TppGui.setup("Stuff")
+        app, gui = TppGui.setup(self.db)
         gui.show()
         # Now we start profiling the execution of the app
         cProfile.runctx('app.exec()', globals(), locals(), filename='profile_output')
         return
-        
-    def setup_local_db(self):
-        db_path = ".\\data.db"
-        settings = Settings(db_path, {"test": "False"})
-        #self.settings_data = settings.get_settings_data()
-        #self.settings.set_test(True) # Old
-        #log(self.settings.get_test())
-        
-    def setup_global_db(self):
-        pass
-    
 
 profiler = cProfile.Profile()
 profiler.enable()

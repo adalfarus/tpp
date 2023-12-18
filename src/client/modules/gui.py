@@ -9,6 +9,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from math import floor
 import requests
 import time
+import json
 import sys
 import re
 
@@ -687,6 +688,10 @@ class ExtraInfoWidget(QWidget):
         self.available_times_layout.addWidget(self.available_times_label)
         self.available_times_layout.addWidget(self.time_to_input)
         self.specific_details_layout.addLayout(self.available_times_layout)
+        
+        self.status_select = QComboBox(self)
+        self.status_select.addItems(["Student", "Teacher", "Other"])
+        self.specific_details_layout.addWidget(self.status_select)
 
     def add_employee_specific_fields(self):
         self.rank_input = QLineEdit(self)
@@ -710,7 +715,7 @@ class ExtraInfoWidget(QWidget):
             "address": self.address_input.text(),
             "birth_date": self.birth_date_input.date().toString("yyyy.MM.dd"),
             "gender": self.gender_select.currentText(),
-            "specific_data": self.get_specific_data()
+            "detail_info": self.get_specific_data()
         }
         self.extraInfoSubmitted.emit(extra_info)
         
@@ -761,8 +766,8 @@ class ExtraInfoWidget(QWidget):
 
     def collect_student_data(self):
         # Collect and return student specific data
-        selected_subjects = [self.subjects_list_widget.item(i).text() for i in range(self.subjects_list_widget.count()) 
-                             if self.subjects_list_widget.item(i).isSelected()]
+        selected_subjects = json.dumps([self.subjects_list_widget.item(i).text() for i in range(self.subjects_list_widget.count()) 
+                             if self.subjects_list_widget.item(i).isSelected()])
         return {
             "grade_level": self.grade_level_select.currentText(),
             "school_type": self.school_type_select.currentText(),
@@ -773,19 +778,20 @@ class ExtraInfoWidget(QWidget):
 
     def collect_teacher_data(self):
         # Collect and return teacher specific data
-        selected_subjects = [self.subjects_list_widget.item(i).text() for i in range(self.subjects_list_widget.count()) 
-                             if self.subjects_list_widget.item(i).isSelected()]
-        selected_grade_levels = [self.grade_levels_list_widget.item(i).text() for i in range(self.grade_levels_list_widget.count()) 
-                                 if self.grade_levels_list_widget.item(i).isSelected()]
-        selected_school_types = [self.school_types_list_widget.item(i).text() for i in range(self.school_types_list_widget.count()) 
-                                 if self.school_types_list_widget.item(i).isSelected()]
+        selected_subjects = json.dumps([self.subjects_list_widget.item(i).text() for i in range(self.subjects_list_widget.count()) 
+                             if self.subjects_list_widget.item(i).isSelected()])
+        selected_grade_levels = json.dumps([self.grade_levels_list_widget.item(i).text() for i in range(self.grade_levels_list_widget.count()) 
+                                 if self.grade_levels_list_widget.item(i).isSelected()])
+        selected_school_types = json.dumps([self.school_types_list_widget.item(i).text() for i in range(self.school_types_list_widget.count()) 
+                                 if self.school_types_list_widget.item(i).isSelected()])
         return {
             "subjects": selected_subjects,
             "grade_levels": selected_grade_levels,
             "school_types": selected_school_types,
             "gender_preference": self.gender_preference_select.currentText(),
             "fee_range": f"{self.fee_from_input.text()}-{self.fee_to_input.text()}",
-            "available_times": f"{self.time_from_input.time().toString('HH:mm')}-{self.time_to_input.time().toString('HH:mm')}"
+            "available_times": f"{self.time_from_input.time().toString('HH:mm')}-{self.time_to_input.time().toString('HH:mm')}",
+            "status": f"{self.status_select.currentText()}"
         }
 
     def collect_employee_data(self):
@@ -941,10 +947,11 @@ class ForgotPasswordWidget(QWidget): # Doesn't need to get implemented
         self.submitClicked.emit(email, username)
     
 class LoginRegisterPage(QWidget):
-    done = Signal()
-    def __init__(self, parent=None):
+    doneDict = Signal(dict)
+    def __init__(self, db, parent=None):
         super().__init__(parent=parent)
         self.navigation_stack = [] # To keep track of where to go back to
+        self.db = db
         
         self.initUI()
         
@@ -952,6 +959,16 @@ class LoginRegisterPage(QWidget):
         
         # Initially show the registration widget
         self.stackedWidget.setCurrentIndex(self.stackedWidget.indexOf(self.registerWidget))
+        
+        self.username = None
+        self.email = None
+        self.password = None
+        self.token = None
+        self.wss = None
+        self.ss = None
+        self.sss = None
+        self.user_id = None
+        self.access_token = None
         
     def initUI(self):
         self.layout = QVBoxLayout(self)
@@ -990,18 +1007,78 @@ class LoginRegisterPage(QWidget):
         self.registerWidget.clickable_login_text.clicked.connect(lambda: self.transition(self.stackedWidget.indexOf(self.loginWidget)))
         
         # Connect the buttons for the paths
-        self.registerWidget.registerClicked.connect(lambda: self.transition(self.stackedWidget.indexOf(self.otpWidget)))
-        self.otpWidget.otpSubmitted.connect(lambda: self.transition(self.stackedWidget.indexOf(self.extraInfoWidget)))
-        self.extraInfoWidget.extraInfoSubmitted.connect(lambda: self.transition(self.stackedWidget.indexOf(self.completionWidget)))
+        self.registerWidget.registerClicked.connect(self.register_client)
+        self.otpWidget.otpSubmitted.connect(self.register_client_2)
+        self.extraInfoWidget.extraInfoSubmitted.connect(self.create_account)
         self.thirdPartyPasswordWidget.submit_button.clicked.connect(lambda: self.transition(self.stackedWidget.indexOf(self.otpWidget)))
-        self.completionWidget.next_button.clicked.connect(self.done.emit)
+        self.completionWidget.next_button.clicked.connect(self.emit_dict)
         self.loginWidget.forgot_password_label.clicked.connect(lambda: self.transition(self.stackedWidget.indexOf(self.forgotPasswordWidget)))
         self.forgotPasswordWidget.submitClicked.connect(lambda: self.transition(self.stackedWidget.indexOf(self.completionWidget)))
+        self.loginWidget.loginClicked.connect(self.login)
         
         # Connect transition back
         widgets = [self.otpWidget, self.extraInfoWidget, self.thirdPartyPasswordWidget, self.forgotPasswordWidget]
         for widget in widgets:
             widget.back_button.clicked.connect(self.transitionBack)
+            
+        self.loginWidget.anonUserClicked.connect(self.emit_dict)
+        
+    def login(self):
+        self.username = self.loginWidget.username_input.text()
+        self.password = self.loginWidget.password_input.text()
+        self.user = self.db.get_user_by_username(self.username)
+        self.user_id = self.user[0]
+        if self.db.get_client_secret(self.user_id):
+            self.transition(self.stackedWidget.indexOf(self.completionWidget))
+        else:
+            self.transition(self.stackedWidget.indexOf(self.otpWidget))
+        
+    def emit_dict(self):
+        dic = {
+            "username": self.username or "",
+            "email": self.email or "",
+            "password": self.password or "", 
+            "token": self.token or "",
+            "wss": self.wss or "",
+            "ss": self.ss or "",
+            "sss": self.sss or "",
+            "user_id": self.user_id or 0,
+            "access_token": self.access_token or ""
+        }
+        
+        self.username = None
+        self.email = None
+        self.password = None
+        self.token = None
+        self.wss = None
+        self.ss = None
+        self.sss = None
+        self.user_id = None
+        self.access_token = None
+        
+        self.doneDict.emit(dic)
+        
+    def register_client(self):
+        self.username = self.registerWidget.username_input.text()
+        self.email = self.registerWidget.email_input.text()
+        self.password = self.registerWidget.password_input.text()
+        self.token = self.db.register_client(self.email)
+        self.transition(self.stackedWidget.indexOf(self.otpWidget))
+        
+    def register_client_2(self, otp):
+        self.wss = otp
+        self.ss, self.sss = self.db.register_client_2(self.token, self.wss)
+        if self.stackedWidget.indexOf(self.registerWidget) == self.navigation_stack[-1]:
+            self.transition(self.stackedWidget.indexOf(self.extraInfoWidget))
+        else:
+            self.db.login(self.token, self.sss, self.username, self.password)
+            self.transition(self.stackedWidget.indexOf(self.completionWidget))
+        
+    def create_account(self, data):
+        self.user_id = self.db.register_user(self.username, self.email, self.password, self.token, self.wss, self.ss, self.sss)
+        self.access_token = self.db.login(self.token, self.sss, self.username, self.password)
+        self.db.create_account(self.user_id, self.token, self.sss, self.access_token, data)
+        self.transition(self.stackedWidget.indexOf(self.completionWidget))
         
     def transition(self, new_index):
         # Push the current index onto the stack before changing
@@ -1288,7 +1365,7 @@ class CalendarCell(QWidget):
     def showEventSelectionPopup(self): # Need to add an attribute to Event class to look in drawEvent if it should draw the event highlighted or not
         # Code to create and display the popup for selecting an event
         msgBox = QMessageBox()
-        msgBox.setText(f"{self.day.date.toString()} - {len(self.day.events)}" + ''.join([f"""\nEvent {self.day.events[i].title} {self.day.events[i].date.toString()} {self.day.events[i].start_time.toString()}-{self.day.events[i].end_date.toString()} {self.day.events[i].end_time.toString()}""" for i in range(len(self.day.events))]))
+        msgBox.setText(f"{self.day.date.toString()} - {len(self.day.events)} events" + ''.join([f"""\nEvent {self.day.events[i].title} {self.day.events[i].date.toString()} {self.day.events[i].start_time.toString()}-{self.day.events[i].end_date.toString()} {self.day.events[i].end_time.toString()}""" for i in range(len(self.day.events))]))
         msgBox.exec_()
         for event in self.day.events: event.selected = False
 
@@ -1415,10 +1492,12 @@ class CalendarWidget(QScrollArea):
                 widget.deleteLater()
     
 class CalendarPage(QWidget):
+    logoutClicked = Signal()
+    
     def __init__(self, db, parent=None):
         super().__init__(parent=parent)
         self.db = db
-        
+        self.dict = None
         self.initUI()
         
     def initUI(self):
@@ -1456,18 +1535,101 @@ class CalendarPage(QWidget):
         self.dropdown_menu = QFrame(self)
         self.styleDropdownMenu()
         self.dropdown_layout = QVBoxLayout(self.dropdown_menu)
-        self.dropdown_menu.setLayout(self.dropdown_layout)
-        self.dropdown_layout.addStretch()
 
-        # Add widgets to dropdown
-        self.addWidgetsToDropdown()
+        # Corner layout for username and buttons
+        corner_layout = QVBoxLayout()
+        self.usernameLabel = QLabel(self.dict.get("username") if self.dict else "Unknown User")
+        self.usernameLabel.setAlignment(Qt.AlignRight)
+        corner_layout.addWidget(self.usernameLabel)
+
+        # Add buttons
+        profile_button = QPushButton("Profile", self)
+        settings_button = QPushButton("Settings", self)
+        logout_button = QPushButton("Logout", self)
+        corner_layout.addWidget(profile_button)
+        corner_layout.addWidget(settings_button)
+        corner_layout.addWidget(logout_button)
+        
+        profile_button.clicked.connect(self.onProfileClicked)
+        settings_button.clicked.connect(self.onSettingsClicked)
+        logout_button.clicked.connect(self.onLogoutClicked)
+
+        # Options layout
+        options_layout = QVBoxLayout()
+        options_layout.addWidget(QLabel("Status"))
+        self.status_options = QComboBox(self)
+        self.status_options.addItems(["Student", "Teacher", "Other"])
+        options_layout.addWidget(self.status_options)
+        
+        options_layout.addWidget(QLabel("Subject"))
+        self.subject_options = QComboBox(self)
+        self.subject_options.addItems(["Math", "Science", "History"])
+        options_layout.addWidget(self.subject_options)
+
+        # Search section
+        search_layout = QHBoxLayout()
+        search_button = QPushButton("Search", self)
+        search_button.clicked.connect(self.onSearchClicked)
+        search_layout.addWidget(search_button)
+
+        # Add search results list widget
+        self.searchResultsList = QListWidget(self)
+        options_layout.addLayout(search_layout)
+        options_layout.addWidget(self.searchResultsList)
+
+        # Main layout composition
+        self.dropdown_layout.addLayout(corner_layout)
+        self.dropdown_layout.addLayout(options_layout)
+
+        self.dropdown_menu.setLayout(self.dropdown_layout)
+
+    def onSearchClicked(self):
+        # Handle search button click
+        print("Search button clicked")
+        student = self.db.get_student_by_user_id(1)
+        data = {
+            "grade_level": "1",#student[1],
+            "school_type": "Elementary",#student[2],
+            "cost_range": "100-200",#student[5],
+            "gender_preference": "No Preference",#student[6],
+            "status": self.status_options.currentText(),
+            "subject": self.subject_options.currentText()
+        }
+        
+        # Populate self.searchResultsList with search results
+        search_results = self.db.find_matches_public(data)
+
+        # Clear existing results
+        self.searchResultsList.clear()
+
+        # Populate with new results
+        for result in search_results:
+            self.searchResultsList.addItem(str(result))
+
+        print("Search results updated.")
+        
+    def addButtonToDropdown(self, text, callback):
+        button = QPushButton(text, self)
+        button.clicked.connect(callback)
+        self.dropdown_layout.addWidget(button)
+        
+    def onProfileClicked(self):
+        # Handle profile button click
+        print("Profile button clicked")
+
+    def onSettingsClicked(self):
+        # Handle settings button click
+        print("Settings button clicked")
+
+    def onLogoutClicked(self):
+        self.logoutClicked.emit() # Handle logout button click
         
     def styleDropdownMenu(self):
         self.dropdown_menu.setFrameShape(QFrame.StyledPanel)
         self.dropdown_menu.setAutoFillBackground(True)
         self.dropdown_menu.setStyleSheet("""
             QFrame {
-                background-color: #f0f0f0;
+                background-color: #2b2b2b; /* #f0f0f0 */
                 border-radius: 15px;
             }
         """)
@@ -1574,7 +1736,7 @@ class TppGui(QMainWindow):
         self.setCentralWidget(self.stacked_widget)
         
         # Initialize the pages
-        self.login_register_page = LoginRegisterPage()
+        self.login_register_page = LoginRegisterPage(self.db)
         self.calendar_page = CalendarPage(self.db)
         #self.calendar_day_page = CalendarDayPage()
         
@@ -1590,7 +1752,8 @@ class TppGui(QMainWindow):
             self.stacked_widget.setCurrentIndex(0)
             
     def connect_signals(self):
-        self.login_register_page.loginWidget.anonUserClicked.connect(self.switch_sides)
+        self.login_register_page.doneDict.connect(self.switch_sides)
+        self.calendar_page.logoutClicked.connect(self.switch_sides)
         
     def resizeEvent(self, event):
         widget = self.stacked_widget.currentWidget()
@@ -1605,11 +1768,15 @@ class TppGui(QMainWindow):
         else:
             event.ignore()
             
-    def switch_sides(self):
+    def switch_sides(self, dict=None):
         if self.stacked_widget.currentIndex() == 0:
             self.stacked_widget.setCurrentIndex(1)
+            self.calendar_page.dict = dict
+            self.calendar_page.toggle_menu()
         else:
             self.stacked_widget.setCurrentIndex(0)
+            self.login_register_page.navigation_stack.clear()
+            self.login_register_page.stackedWidget.setCurrentIndex(0)
             
     def update_content(self): # Automatically update the calendar, when the day changes
         date = QDate.currentDate() # Maybe not do that as it takes a lot of computing power?

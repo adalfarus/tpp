@@ -103,6 +103,7 @@ def init_db(db_path: str, app):
                 event_ids TEXT, -- JSON or comma-separated list of Event IDs
                 average_review REAL, -- Average rating
                 available_times TEXT,
+                status TEXT CHECK(account_type IN ('Student', 'Teacher', 'Other')),
                 last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (account_id) REFERENCES Accounts(id)
             );
@@ -387,14 +388,14 @@ class Database:
 
     @with_db_connection
     def update_teacher_details(self, db, account_id: int, subjects: str, grade_levels: str, school_types: str, gender_preference: str, fee_range: str, registration_fee_paid: bool, 
-                               last_payment_date: datetime.datetime, event_ids: str, average_review: float, available_times: str):
+                               last_payment_date: datetime.datetime, event_ids: str, average_review: float, available_times: str, status: str):
         """Update a teacher details row by a given account id."""
         cursor = db.cursor()
         cursor.execute("UPDATE Accounts SET last_modified = ? WHERE id = ?", (datetime.datetime.now(), account_id))
         cursor.execute("""UPDATE TeacherDetails SET subjects = ?, grade_levels = ?, school_types = ?, gender_preference = ?, fee_range = ?, registration_fee_paid = ?, 
-                       last_payment_date = ?, event_ids = ?, average_review = ?, available_times = ?, last_modified = ? WHERE account_id = ?""", 
+                       last_payment_date = ?, event_ids = ?, average_review = ?, available_times = ?, status = ?, last_modified = ? WHERE account_id = ?""", 
                        (subjects, grade_levels, school_types, gender_preference, fee_range, registration_fee_paid, last_payment_date, event_ids, 
-                        average_review, available_times, datetime.datetime.now(), account_id))
+                        average_review, available_times, status, datetime.datetime.now(), account_id))
         db.commit()
 
     @with_db_connection
