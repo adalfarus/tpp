@@ -352,6 +352,7 @@ def find_matches_public(): # For the try_it_out site
         result = []
         for rowT in tData: # going through all teachers
             rowT = db.get_account_info(rowT["account_id"]) + rowT
+            rowT["tp"] = teacher_points(rowT.get("account_id"))
             if rowT["gender_preference"] == sData["gender_preference"] or not sData["gender_preference"] and rowT["status"] == sData["status"] or sData["status"] == "other"  
             and any([x in rowT["subjects"] for x in sData["subjects"]]) and sData["grade_level"] in rowT["grade_levels"] 
             and range([int(x) for x in sData["cost_range"].split("-")]).stop >= range([int(x) for x in rowT["fee_range"].split("-")]).start 
