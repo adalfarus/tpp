@@ -336,10 +336,11 @@ def create_account():
 #
 def teacher_points(id): # calculating tp
     td = db.get_teacher_details(id)
-    if not td["students"]: # if teacher has no students yet
+    students = td.get("event_ids", 0)
+    if not students: # if teacher has no students yet
         td["tp"] = 0
     else:
-        td["tp"] = td["average_review"] / td["students"]
+        td["tp"] = td["average_review"] / students
 
 @app.route('/find_matches_public', methods=['GET', 'POST'])
 def find_matches_public(): # For the try_it_out site
