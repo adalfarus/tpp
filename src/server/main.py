@@ -338,9 +338,22 @@ def create_account():
 def find_matches_public(): # For the try_it_out site
     if request.method == "POST":
         data = request.json
-        # Implement matching logic
-        # ...
-        return "Not implemented yet"
+        sData = json.loads(data) #student data
+        tData = db.get_all_teacher_details() #list of teachers with data
+        result = []
+        for rowT in tData: # going through all teachers
+            rowT = db.get_account_info(rowT["account_id"]) + rowT
+            if rowT["gender"] == sData["gender"] or not sData["gender"] and rowT["status"] == sData["status"] or not sData["status"] #checking if conditions are true
+            and any([x in rowT["subjects"] for x in sData["subjects"]]) and sData["class"] in rowT["class"] 
+            and range(*[int(x) for x in sData["cost_range"].split("-")]).stop >= range(*[int(x) for x in rowT["fee_range"].split("-")]).start
+            and range(*[int(x) for x in rowT["fee_range"].split("-")]).stop >= range(*[int(x) for x in sData["cost_range"].split("-")]).start:
+                pos = 0
+                if not len(result): # checking if teachers are in list and adding if not
+                    result.append([rowT,rowT["tp"]])
+                else:
+                    while rowT["tp"] < result[pos][1] and pos != len(result)-1: # sorting teacher in list by tp
+                        pos += 1
+                    result.insert([pos][rowT,rowT["tp"]])
     else:
         return render_template('site_not_found.html')
 
