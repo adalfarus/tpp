@@ -352,9 +352,9 @@ def find_matches_public(): # For the try_it_out site
         result = []
         for rowT in tData: # going through all teachers
             rowT = db.get_account_info(rowT["account_id"]) + rowT
-            if rowT["gender_preference"] == sData["gender_preference"] or not sData["gender_preference"] and rowT["status"] == sData["status"] or sData["status"] == "other" #checking if conditions are true
+            if rowT["gender_preference"] == sData["gender_preference"] or not sData["gender_preference"] and rowT["status"] == sData["status"] or sData["status"] == "other"  #checking if conditions are true
             and any([x in rowT["subjects"] for x in sData["subjects"]]) and sData["grade_level"] in rowT["grade_levels"] 
-            and range([int(x) for x in sData["cost_range"].split("-")]).stop >= range([int(x) for x in rowT["fee_range"].split("-")]).start
+            and range([int(x) for x in sData["cost_range"].split("-")]).stop >= range([int(x) for x in rowT["fee_range"].split("-")]).start 
             and range([int(x) for x in rowT["fee_range"].split("-")]).stop >= range([int(x) for x in sData["cost_range"].split("-")]).start:
                 pos = 0
                 if not len(result): # checking if teachers are in list and adding if not
