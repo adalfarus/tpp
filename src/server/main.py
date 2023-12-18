@@ -362,7 +362,7 @@ def find_matches_public(): # For the try_it_out site
                     while rowT["tp"] < result[pos][1] and pos != len(result)-1: # sorting teacher in list by tp
                         pos += 1
                     result.insert([pos][rowT,rowT["tp"]])
-        return "Not implemented yet"
+        return response("Searched", 200, False, {"results": result})
     else:
         return render_template('site_not_found.html')
 
