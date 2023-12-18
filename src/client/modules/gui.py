@@ -2,14 +2,20 @@ from PySide6.QtWidgets import (QWidget, QMainWindow, QApplication, QVBoxLayout, 
                                QToolButton, QStyle, QComboBox, QLineEdit, QLabel, QFrame, 
                                QPushButton, QDateEdit, QListWidget, QListWidgetItem, 
                                QTimeEdit, QScrollArea, QMessageBox, QStackedWidget, 
-                               QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QUrl, QSize, QUrlQuery, QRegularExpression
-from PySide6.QtGui import QIcon, QCursor, QRegularExpressionValidator, QIntValidator, QPixmap
+                               QMenu, QWidgetAction, QGraphicsDropShadowEffect)
+from PySide6.QtCore import Qt, Signal, QUrl, QSize, QUrlQuery, QRegularExpression, QPoint, QRect, QTime, QDate, QPropertyAnimation, QTimer
+from PySide6.QtGui import QIcon, QCursor, QRegularExpressionValidator, QIntValidator, QPixmap, QPainter, QColor, QPen, QMouseEvent, QAction
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from math import floor
 import requests
 import time
 import sys
 import re
+
+from aplustools.io import environment as env
+
+from .classes import Day, Event, QFlowLayout
+from .themes import Normal, Classic, ThemeColor
 
 def gui_init(logger):
     global log
@@ -1016,16 +1022,622 @@ class LoginRegisterPage(QWidget):
 # Section 2
 # Calendar and dropdown
 #
+class ProfileWidget(QWidget):
+    profileClicked = Signal()
+    settingsClicked = Signal()
+    logoutClicked = Signal()
+    
+    def __init__(self, parent=None, image_path="", image_size=40, border_width=2, padding=4):
+        super().__init__(parent)
+        self.image_size = image_size
+        self.border_width = border_width
+        self.padding = padding
+        self.total_size = self.image_size + 2 * (self.border_width + self.padding)
+        
+        self.initUI(image_path)
+        self.connectSignals()
+        
+    def initUI(self, image_path):
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Profile picture
+        self.profilePic = QLabel(self)
+        self.setup_profile_pic(image_path)
+        self.layout.addWidget(self.profilePic)
+        self.profilePic.mousePressEvent = self.show_dropdown
+        
+        # Dropdown menu
+        self.dropdownMenu = QMenu(self)
+        
+        label = QLabel("Username")
+        label.setStyleSheet("padding: 3px; font-weight: bold; background-color: black;")
+        
+        # Create a QWidgetAction and set the custom widget
+        labelAction = QWidgetAction(self.dropdownMenu)
+        labelAction.setDefaultWidget(label)
+        
+        self.dropdownMenu.addAction(labelAction)
+        self.profile_action = self.dropdownMenu.addAction("Profile")
+        self.settings_action = self.dropdownMenu.addAction("Settings")
+        self.logout_action = self.dropdownMenu.addAction("Logout")
+        
+    def setup_profile_pic(self, image_path):
+        # Load and scale the pixmap
+        pixmap = QPixmap(image_path)
+        pixmap = pixmap.scaled(self.image_size, self.image_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        
+        # Create a rounded pixmap
+        rounded_pixmap = QPixmap(pixmap.size())
+        rounded_pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(rounded_pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.GlobalColor.white)
+        painter.drawRoundedRect(0, 0, pixmap.width(), pixmap.height(), self.image_size // 2, self.image_size // 2)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+        
+        # Set the rounded pixmap to the label with border and padding
+        self.profilePic.setPixmap(rounded_pixmap)
+        self.profilePic.setStyleSheet(f"""
+            QLabel {{
+                border: {self.border_width}px solid blue;
+                border-radius: {self.total_size // 2}px;
+                padding: {self.padding}px;
+            }}
+        """)
+        self.profilePic.setFixedSize(self.total_size, self.total_size)
+        
+    def show_dropdown(self, event):
+        pos = self.profilePic.mapToGlobal(QPoint(0, self.profilePic.height()))
+        self.dropdownMenu.exec(pos)
+    
+    def connectSignals(self):
+        # Connect actions to respective methods
+        self.profile_action.triggered.connect(self.profileClicked.emit)
+        self.settings_action.triggered.connect(self.settingsClicked.emit)
+        self.logout_action.triggered.connect(self.logoutClicked.emit)
+    
+class CalendarCell(QWidget):
+    dayClicked = Signal(object) # Signal for when the little top of the day is clicked
+    
+    def __init__(self, day: Day, parent=None):
+        super().__init__(parent=parent)
+        self.day = day
+        self.setFixedSize(80, 90)
+        self.setToolTip(f"{day.date.toString(Qt.DateFormat.ISODate)} - {len(day.events)} events")
+        
+        self.needRedrawBackground = True
+        self.needRedrawText = True
+        self.needRedrawEvents = True
+        
+        self.needRecalculateDateLines = True
+        self.line_ys = []
+        self.point_ys = []
+        
+        self.day.events_changed.connect(self.toggle_need_redraw_events)
+        
+    def toggle_need_redraw_events(self):
+        self.needRedrawEvents = not self.needRedrawEvents
+        
+    def isVisibleInViewport(self):
+        parent = self.parent()
+        while parent and not isinstance(parent, QScrollArea):
+            parent = parent.parent()
+            
+        if not parent:
+            log("Not in a scroll area")
+            return False
+        
+        # Translate the cell's position to the coordinate system of the scroll area's viewport
+        viewportPos = self.mapTo(parent.viewport(), self.rect().topLeft())
+        cellRectInViewport = QRect(viewportPos, self.size())
+        
+        visible = parent.viewport().rect().intersects(cellRectInViewport)
+        if not visible:
+            pass # log(f"Cell at {viewportPos} with size {self.size()} is not visible in viewport") # Debug
+        return visible
+    
+    def paintEvent(self, event):
+        with QPainter(self) as painter:
+            rect = self.rect()
+            if self.isVisibleInViewport():
+                self.needRedrawBackground = True
+                self.needRedrawEvents = True
+                self.needRedrawText = True
+            if self.needRedrawBackground:
+                self.draw_background(painter, rect)
+                self.needRedrawBackground = False
+            if self.needRedrawText:
+                self.draw_date_info(painter, rect)
+                self.needRedrawText = False
+            if self.needRedrawEvents:
+                self.draw_events(painter)
+                self.needRedrawEvents = False
+                
+    def draw_background(self, painter, rect):
+        # Draw the top part with dark grey background
+        top_rect = QRect(0, 0, rect.width(), 20)
+        if self.day.is_current_day: # 44, 143, 61
+            selected_top_color = QColor(200, 200, 200) # White
+        elif not self.day.is_past:
+            selected_top_color = QColor(70, 70, 70) # Dark grey color
+        else:
+            selected_top_color = QColor(28, 28, 28) # Darker grey color
+            
+        if self.day.is_weekday:
+            if not self.day.is_past:
+                selected_color = QColor(78, 83, 92)
+            else:
+                selected_color = QColor(31, 32, 36)
+        else:
+            if not self.day.is_past:
+                selected_color = QColor(0, 58, 145) # 0, 89, 255
+            else:
+                selected_color = QColor(1, 45, 128)#.darker()
+        painter.fillRect(top_rect, selected_top_color)
+        painter.fillRect(rect.adjusted(0, 20, 0, 0), selected_color)
+        
+        line_intervals = ["10:00:00", "16:00:00"]
+        time_intervals = ["06:00:00", "12:00:00", "18:00:00"] # Timestamps
+        
+        if self.needRecalculateDateLines:
+            self.needRecalculateDateLines = False
+            self.line_ys.clear()
+            for line in line_intervals:
+                line_y = self.time_to_position(line) + 18 # Adjust for the top part
+                self.line_ys.append(line_y)
+                
+            self.point_ys.clear()
+            for time in time_intervals:
+                y_pos = self.time_to_position(time)
+                self.point_ys.append(y_pos)
+        self.line_ys, self.point_ys = [47, 64], [17, 35, 52]
+                
+        for line_y in self.line_ys:
+            painter.setPen(QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.DashLine))
+            painter.drawLine(0, line_y, rect.width(), line_y)
+                
+        for i, y_pos in enumerate(self.point_ys):
+            time = time_intervals[i]
+            painter.drawText(5, y_pos + 25, time)
+            
+    def draw_events(self, painter):
+        if not self.day.events:
+            return
+        
+        for event in self.day.events:
+            current_pusher, current_width = self.day.event_positions[event]
+            
+            start_bundle, end_bundle = event.get_date_coverage(self.day.date)
+            if not start_bundle or not end_bundle:
+                continue
+            
+            start_time, starts_today = start_bundle
+            end_time, ends_today = end_bundle
+            is_selected = event.selected
+            
+            start_p, end_p = self.time_to_position(start_time), self.time_to_position(end_time)
+            
+            start_pos = start_p if starts_today else start_p# - 20 # Somehow fix
+            end_pos = end_p if ends_today else end_p + 20
+            
+            event_height = end_pos - start_pos
+            
+            # Get the color of the event
+            color = event.color
+            
+            # Set a color for the event box
+            if not is_selected:
+                painter.setBrush(color)
+                painter.setPen(QPen(color.darker(), 2))
+            else:
+                painter.setBrush(color.lighter())
+                painter.setPen(QPen(color.darker(), 3))
+                
+            # Draw the event box
+            painter.drawRect(current_pusher, 20 + start_pos, current_width, event_height)
+            
+    def time_to_position(self, time):
+        # Convert a QTime object to a vertical position in this cell
+        if isinstance(time, str):
+            time = QTime.fromString(time, "HH:mm:ss")
+        total_minutes = time.hour() * 60 + time.minute()
+        return int((total_minutes / 1440) * (self.height() - 20))  # Adjust for the top part
+    
+    def draw_date_info(self, painter, rect):
+        is_past = self.day.date < QDate.currentDate()
+        
+        # Draw date and month in the top part
+        date_text = self.day.date.toString("MMM d")
+        painter.setPen(Qt.white) if not is_past else painter.setPen(QColor(46, 46, 46))
+        painter.drawText(rect.adjusted(0, 2, -5, -40), Qt.AlignmentFlag.AlignRight, date_text)  # Somehow -40 and not -80 ??? -> Fixed clipping issue
+
+        # Draw weekday abbreviation
+        day_text = self.day.date.toString("ddd")
+        painter.drawText(rect.adjusted(5, 2, 0, -40), Qt.AlignmentFlag.AlignLeft, day_text)  # Somehow -40 and not -80 ??? -> Fixed clipping issue
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.y() < 20:
+            self.dayClicked.emit(self.day)  # Emit signal for top part click
+        else:
+            for event in self.day.events: event.selected = True
+            self.showEventSelectionPopup()  # Show popup for event selection
+            
+    def createCircleIcon(self, color): # Unused
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setBrush(QColor(color))
+        painter.setPen(QColor(color))
+        painter.drawEllipse(0, 0, 16, 16)
+        painter.end()
+        return QIcon(pixmap)
+
+    def showEventSelectionPopup(self): # Doesn't work
+        menu = QMenu(self)
+        for event in self.day.events:
+            icon = self.createCircleIcon("blue") # Replace "blue" with the color of the event
+            action = QAction(icon, event.title, self)
+            action.triggered.connect(lambda: self.handleEventSelection(event))
+            menu.addAction(action)
+        menu.exec(self.mapToGlobal(QPoint(0, 20)))  # Positioning the menu right below the cell
+        
+    def showEventSelectionPopup(self): # Need to add an attribute to Event class to look in drawEvent if it should draw the event highlighted or not
+        # Code to create and display the popup for selecting an event
+        msgBox = QMessageBox()
+        msgBox.setText(f"{self.day.date.toString()} - {len(self.day.events)}" + ''.join([f"""\nEvent {self.day.events[i].title} {self.day.events[i].date.toString()} {self.day.events[i].start_time.toString()}-{self.day.events[i].end_date.toString()} {self.day.events[i].end_time.toString()}""" for i in range(len(self.day.events))]))
+        msgBox.exec_()
+        for event in self.day.events: event.selected = False
+
+    def handleEventSelection(self, event): # Unused
+        print("Selected Event:", event.title)
+    
+class CalendarWidget(QScrollArea):
+    day_clicked = Signal(object)
+    def __init__(self, parent=None, base_date=QDate.currentDate(), events=list(), month_range=(-1, 1)):
+        super().__init__(parent)
+        self.base_date = base_date
+        self.events = events
+        self.days = {}
+        
+        self.month_range = month_range
+
+        # Inner widget and layout for the scroll area
+        self.innerWidget = QWidget()
+        self.flowLayout = QFlowLayout(self.innerWidget)
+        self.setWidget(self.innerWidget)
+        self.setWidgetResizable(True)
+
+        # Adjust month range; maybe replace this part with reload_calendar?
+        start_date = self.calculate_date_from_float(base_date, month_range[0])
+        end_date = self.calculate_date_from_float(base_date, month_range[1])
+
+        self.load_months(start_date, end_date)
+        self.create_events()
+        self.organize_calendar()
+
+    def reload_calendar(self, new_base_date=None):
+        #self.clear_layout() # load_months -> organize calendar already does this
+        self.days.clear()
+        self.base_date = new_base_date or self.base_date
+        start_date = self.calculate_date_from_float(self.base_date, self.month_range[0])
+        end_date = self.calculate_date_from_float(self.base_date, self.month_range[1])
+        self.load_months(start_date=start_date, end_date=end_date)
+        self.create_events()
+        self.organize_calendar()
+
+    def calculate_date_from_float(self, base_date, months_float):
+        full_months = floor(months_float)
+        remaining_days = int((months_float - full_months) * 30)  # Approximate days in a month
+
+        calculated_date = base_date.addMonths(full_months)
+        calculated_date = calculated_date.addDays(remaining_days)
+        return calculated_date
+
+    def load_months(self, start_date, end_date):
+        current_date = start_date
+        while current_date <= end_date:
+            if current_date not in self.days:
+                self.days[current_date] = Day(current_date)
+            current_date = current_date.addDays(1)
+
+    def create_events(self):
+        for event in self.events:
+            start = event.date
+            end = event.end_date
+            try:
+                while start <= end:
+                    #if event. Fix this -> calculate date ends here?
+                    if event.end_time != QTime.fromString("00:00", "HH:mm"):
+                        day = self.days[start]
+                        if day.date == QDate.fromString("2023.12.25", "yyyy.MM.dd"):
+                            pass # log(len(day.events)) # Debug
+                        if len(day.events) < 5:
+                            day.events.append(event)
+                        else:
+                            log("Day already has maximum amount of events (5)!")
+                    start = start.addDays(1)
+            except KeyError:
+                print("Error", event)
+        [day.calculate_event_positions() for day in self.days.values()]
+        self.reload_events()
+
+    def reload_events(self):
+        from PySide6.QtGui import QColor
+        # Define a list of distinct colors for the events
+        colors = [
+            QColor(255, 0, 0, 50),  # Red, semi-transparent
+            QColor(0, 255, 0, 50),  # Green, semi-transparent
+            QColor(0, 0, 255, 50),  # Blue, semi-transparent
+            QColor(255, 255, 0, 50), # Yellow, semi-transparent
+            QColor(255, 0, 255, 50),  # Magenta, semi-transparent
+            QColor(0, 255, 255, 50)  # ???, semi-transparent
+        ]
+        for i, event in enumerate(self.events):
+            event.color = colors[i % len(colors)]
+
+    def organize_calendar(self):
+        self.clear_layout()
+        
+        # Determine the first day of the week for the first day of the month
+        first_day = min(self.days.keys())
+        first_day_num = first_day.dayOfWeek()
+        #first_saturday = first_day_num == 6 # It should now start at monday, and this was never used
+        
+        # Fill in empty cells until the first day of the month
+        #spots = (first_day_num + 1) % 7
+        # 1, 2, 3, 4, 5, 6, 7
+        #                ^
+        # +5 +4 +3 +2 +1 0 -1
+        # -1 -2 -3 -4 -5 -6 -7
+        # Wrap around logic (what we want as output)
+        # 2, 3, 4, 5, 6, 0, 1
+        # map()
+        spots = (6 + first_day_num) % 7
+        for i in range(spots):
+            empty_cell = QWidget()
+            empty_cell.setFixedSize(80, 90)  # Match the size of the CalendarCell
+            self.flowLayout.addWidget(empty_cell)
+        
+        for date, day in sorted(self.days.items()):
+            cell = CalendarCell(day, self)
+            cell.dayClicked.connect(self.day_clicked.emit)
+            self.flowLayout.addWidget(cell)
+
+    def clear_layout(self):
+        while self.flowLayout.count():
+            item = self.flowLayout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+    
+class CalendarPage(QWidget):
+    def __init__(self, db, parent=None):
+        super().__init__(parent=parent)
+        self.db = db
+        
+        self.initUI()
+        
+    def initUI(self):
+        # Main Layout
+        self.mainLayout = QVBoxLayout()
+        
+        # Spacing to prevent calendar from being covered by dropdown
+        self.mainLayout.addSpacing(80)
+        
+        self.setupCalendar()
+        self.setupDropdownMenu()
+        self.setupMenuButton()
+        self.setupAnimation()
+        
+        # Finalize layout
+        self.setLayout(self.mainLayout)
+        
+        self.dropdown_animation.valueChanged.connect(self.update_button_position)
+        self.toggle_menu()  # Somehow needs this to set dropdown_menus position right
+        
+    def setupCalendar(self):
+        # Calendar widget setup
+        events = [Event("Hello World", "No desc", "2023.12.12", "08:00", "39:00:99999"), 
+                  Event("Gs", "NOOOOOOOOOOOOOOO", "2023.12.15", "00:00", "999:00"), 
+                  Event("Gs2", "never", "2023.12.25", "00:00", "12:00"), 
+                  Event("Gs3", "neverrr", "2023.12.25", "00:12", "12:00"), 
+                  Event("Gs4", "neverrrrrrrr", "2023.12.25", "12:00", "12:00"), 
+                  Event("Gs5", "NEVER", "2023.12.25", "08:12", "02:00"), 
+                  Event("Gs6", "AAAAAAAAAAAHHHHHHHHHHHHHHHHHH", "2023.12.25", "08:12", "03:00")] # db.get events
+        self.calendarWidget = CalendarWidget(self, events=events, month_range=(-0.5, 2), base_date=QDate.fromString("2023.11.30", "yyyy.MM.dd"))
+        self.mainLayout.addWidget(self.calendarWidget)
+        
+    def setupDropdownMenu(self):
+        # Dropdown Menu setup
+        self.dropdown_menu = QFrame(self)
+        self.styleDropdownMenu()
+        self.dropdown_layout = QVBoxLayout(self.dropdown_menu)
+        self.dropdown_menu.setLayout(self.dropdown_layout)
+        self.dropdown_layout.addStretch()
+
+        # Add widgets to dropdown
+        self.addWidgetsToDropdown()
+        
+    def styleDropdownMenu(self):
+        self.dropdown_menu.setFrameShape(QFrame.StyledPanel)
+        self.dropdown_menu.setAutoFillBackground(True)
+        self.dropdown_menu.setStyleSheet("""
+            QFrame {
+                background-color: #f0f0f0;
+                border-radius: 15px;
+            }
+        """)
+        self.addShadowEffect(self.dropdown_menu)
+        
+    def addShadowEffect(self, widget):
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(15)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setOffset(5, 5)
+        widget.setGraphicsEffect(shadow)
+        
+    def addWidgetsToDropdown(self):
+        # Profile Widget (assuming ProfileWidget is defined elsewhere)
+        self.profileWidget = ProfileWidget(self, "resources/old_icon.png", image_size=50, border_width=2, padding=4)
+        self.profileWidget.setParent(self.dropdown_menu)
+        self.dropdown_layout.addWidget(self.profileWidget)
+        
+    def setupMenuButton(self):
+        self.menu_button = QPushButton("Toggle Menu", self)
+        self.menu_button.setGeometry(0, 0, self.width(), 40)
+        self.menu_button.clicked.connect(self.toggle_menu)
+        self.update_button_position()
+
+    def setupAnimation(self):
+        self.dropdown_animation = QPropertyAnimation(self.dropdown_menu, b"geometry")
+        self.dropdown_animation.setDuration(500)
+
+    def toggle_menu(self):
+        height = self.height()
+        if self.dropdown_menu.y() < 0:
+            start_value = QRect(0, -height + self.menu_button.height(), self.width(), height)
+            end_value = QRect(0, 0, self.width(), height - self.menu_button.height())
+        else:
+            start_value = QRect(0, 0, self.width(), height - self.menu_button.height())
+            end_value = QRect(0, -height + self.menu_button.height(), self.width(), height)
+
+        self.dropdown_animation.setStartValue(start_value)
+        self.dropdown_animation.setEndValue(end_value)
+        self.dropdown_animation.start()
+
+    def update_button_position(self, value=None):
+        if not value:
+            dropdown = self.dropdown_menu.y() + self.dropdown_menu.height()
+            self.menu_button.move(0, dropdown)
+        else:
+            dropdown = value.y() + self.dropdown_menu.height()
+            self.menu_button.move(0, dropdown)
+
+    def resize_event(self, new_width):
+        # Adjust the button's width when the main window is resized
+        self.menu_button.setFixedWidth(new_width)
+        # Adjust the dropdown's width and position
+        self.dropdown_menu.setFixedWidth(new_width)
+        if self.dropdown_menu.y() > 40:
+            self.dropdown_menu.move(0, 40)
+    
+class CalendarDayPage(QWidget):
+    pass
     
 class TppGui(QMainWindow):
-    changed = Signal()
-    def __init__(self, parent=None):
+    timer_exc = Signal()
+    
+    @staticmethod
+    def setup(db):
+        log("Setup working")
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        gui = TppGui(db=db)
+        return (app, gui)
+    
+    @staticmethod
+    def start(app, gui):
+        gui.show()
+        app.exec()
+        return (app, gui)
+    
+    def __init__(self, db, parent=None):
         super().__init__(parent)
-        self.changes = "Hello"
-        self.changed.emit()
+        if not db:
+            return
+        else:
+            self.db = db
+        self.setGeometry(*(100, 60, 634, 402))
+        self.setWindowTitle("Tutoring Placement Program")
+        self.setWindowTitle("TPP | V0.1.0")
+        self.setWindowIcon(QIcon("dalle2bgr.png"))
         
-    def changes(self):
-        return self.changes
+        self.setup_gui()
+        self.connect_signals()
+        
+        self.system = env.System()
+        self.theme = ""
+        self.update_theme()
+        
+        self.timer = QTimer(self)
+        self.timer.start(500)
+        self.timer.timeout.connect(self.timer_tick)
+        
+    def setup_gui(self):
+        self.stacked_widget = QStackedWidget()
+        
+        # Set the main widget as the stacked widget
+        self.setCentralWidget(self.stacked_widget)
+        
+        # Initialize the pages
+        self.login_register_page = LoginRegisterPage()
+        self.calendar_page = CalendarPage(self.db)
+        #self.calendar_day_page = CalendarDayPage()
+        
+        # Add the pages to the stack
+        self.stacked_widget.addWidget(self.login_register_page)
+        self.stacked_widget.addWidget(self.calendar_page)
+        #self.stacked_widget.addWidget(self.calendar_day_page)
+        
+        # Logic to switch the pages based on a db state
+        if 0:#self.db.get.logged_in():
+            self.stacked_widget.setCurrentIndex(1)
+        else:
+            self.stacked_widget.setCurrentIndex(0)
+            
+    def connect_signals(self):
+        self.login_register_page.loginWidget.anonUserClicked.connect(self.switch_sides)
+        
+    def resizeEvent(self, event):
+        widget = self.stacked_widget.currentWidget()
+        widget.resize_event(self.width())
+        super().resizeEvent(event)
+        
+    def closeEvent(self, event):
+        reply = QMessageBox.question(self, 'Question',
+            "Are you sure to quit?", QMessageBox.Yes, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+            
+    def switch_sides(self):
+        if self.stacked_widget.currentIndex() == 0:
+            self.stacked_widget.setCurrentIndex(1)
+        else:
+            self.stacked_widget.setCurrentIndex(0)
+            
+    def update_content(self): # Automatically update the calendar, when the day changes
+        date = QDate.currentDate() # Maybe not do that as it takes a lot of computing power?
+        if self.stacked_widget.widget(1).calendarWidget.base_date != date:
+            self.stacked_widget.widget(1).calendarWidget.reload_calendar(date)
+            
+    def update_theme(self):
+        if self.system.get_windows_theme().lower() != self.theme:
+            self.theme = self.system.get_windows_theme().lower()
+            is_win_11 = int(self.system.get_major_os_version()) == 11
+            if self.theme == "light":
+                if is_win_11:
+                    theme = Normal(ThemeColor.LIGHT)
+                    self.setPalette(theme.get_palette())
+                else:
+                    theme = Classic(ThemeColor.LIGHT)
+                    self.setStyleSheet(theme.get_style_sheet())
+            elif self.theme == "dark":
+                if is_win_11:
+                    theme = Normal(ThemeColor.DARK)
+                    self.setPalette(theme.get_palette())
+                else:
+                    theme = Classic(ThemeColor.DARK)
+                    self.setStyleSheet(theme.get_style_sheet())
+                    
+    def timer_tick(self):
+        self.update_content()
+        self.update_theme()
 
 def start(parent):
     app = QApplication(sys.argv)
