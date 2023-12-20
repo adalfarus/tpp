@@ -14,7 +14,18 @@ class DatabaseManager:
     def create_tables(self):
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
-            # Create User, ClientSecrets, Account, etc. tables
+            # Create CurrentUser, User, ClientSecrets, Account, etc. tables
+            # Current User
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS CurrentUser (
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    current_jwt TEXT NOT NULL,
+                    current_jwt_time DATETIME NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES User(id)
+                )
+            ''')
             # User Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS User (
@@ -100,6 +111,9 @@ class DatabaseManager:
                     FOREIGN KEY(account_id) REFERENCES Account(id)
                 )
             ''')
+            
+            # Unknown User Entry
+            cursor.execute('''''')
             
     def register_client(self, email):
         response = requests.get("https://127.0.0.1:5000/register_client", params={"email": email}, verify=False)
