@@ -338,9 +338,10 @@ def teacher_points(id): # calculating tp
     td = db.get_teacher_details(id)
     students = td.get("event_ids", 0)
     if not students: # if teacher has no students yet
-        td["tp"] = 0
+        tp = 0
     else:
         td["tp"] = td["average_review"] / students
+    return tp
 
 @app.route('/find_matches_public', methods=['GET', 'POST'])
 def find_matches_public(): # For the try_it_out site
@@ -353,17 +354,17 @@ def find_matches_public(): # For the try_it_out site
         for rowT in tData: # going through all teachers
             rowT = db.get_account_info(rowT["account_id"]) + rowT
             rowT["tp"] = teacher_points(rowT.get("account_id"))
-            if rowT["gender_preference"] == sData["gender_preference"] or not sData["gender_preference"] and rowT["status"] == sData["status"] or sData["status"] == "other"  
+            if (rowT["gender_preference"] == sData["gender_preference"] or not sData["gender_preference"] and rowT["status"] == sData["status"] or sData["status"] == "other"  
             and any([x in rowT["subjects"] for x in sData["subjects"]]) and sData["grade_level"] in rowT["grade_levels"] 
             and range([int(x) for x in sData["cost_range"].split("-")]).stop >= range([int(x) for x in rowT["fee_range"].split("-")]).start 
-            and range([int(x) for x in rowT["fee_range"].split("-")]).stop >= range([int(x) for x in sData["cost_range"].split("-")]).start: #checking if conditions are true
+            and range([int(x) for x in rowT["fee_range"].split("-")]).stop >= range([int(x) for x in sData["cost_range"].split("-")]).start): #checking if conditions are true
                 pos = 0
                 if not len(result): # checking if teachers are in list and adding if not
                     result.append([rowT,rowT["tp"]])
                 else:
                     while rowT["tp"] < result[pos][1] and pos != len(result)-1: # sorting teacher in list by tp
                         pos += 1
-                    result.insert([pos][rowT,rowT["tp"]])
+                    result.insert(pos , [rowT , rowT["tp"]])
         return response("Searched", 200, False, {"results": result})
     else:
         return render_template('site_not_found.html')
@@ -446,9 +447,13 @@ def sync():
         decrypted_data = decrypt(secure_shared_secret, encrypted_data)
         data = json.loads(decrypted_data)
         
-        account_last_modified, account_hash = data["account"]
-        details_last_modified, details_hash = data["details"]
+        account_last_modified, account_hash = data["account"] # All last modified are a string :( # Fixed
+        details_last_modified, details_hash = data["details"] # That only the server can sync is currently implemented so users can't change data like last_payment data.
         settings_last_modified, settings_hash = data["settings"]
+        
+        account_last_modified = datetime.datetime.strptime(account_last_modified, "%Y.%m.%d")
+        details_last_modified = datetime.datetime.strptime(details_last_modified, "%Y.%m.%d")
+        settings_last_modified = datetime.datetime.strptime(settings_last_modified, "%Y.%m.%d")
         
         response_data: Dict[str, dict] = {}
         

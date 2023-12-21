@@ -143,6 +143,7 @@ def init_db(db_path: str, app):
                 account_id INTEGER,
                 setting_geometry TEXT,
                 setting_style TEXT CHECK(setting_style IN ('Classic', 'Normal')),
+                setting_theme TEXT CHECK(setting_theme IN ('Light', 'Dark')),
                 last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (account_id) REFERENCES Accounts(id)
             );

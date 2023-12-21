@@ -3,6 +3,7 @@ from contextlib import closing
 from datetime import datetime
 import requests
 import json
+from aplustools.utils.genpass import GeneratePasswords # Doesn't work for python 3.9
 
 from .crypt import hash_password, decrypt, encrypt
 
@@ -14,7 +15,7 @@ class DatabaseManager:
     def create_tables(self):
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
-            # Create CurrentUser, User, ClientSecrets, Account, etc. tables
+            # Create CurrentUser, Users, ClientSecrets, Account, etc. tables
             # Current User
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS CurrentUser (
@@ -23,12 +24,36 @@ class DatabaseManager:
                     email TEXT NOT NULL,
                     current_jwt TEXT NOT NULL,
                     current_jwt_time DATETIME NOT NULL,
-                    FOREIGN KEY(user_id) REFERENCES User(id)
+                    FOREIGN KEY(user_id) REFERENCES Users(id)
                 )
             ''')
-            # User Table
+            # Current user table triggers
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS User (
+                CREATE TRIGGER prevent_multiple_rows
+                BEFORE INSERT ON CurrentUser
+                WHEN (SELECT COUNT(*) FROM CurrentUser) >= 1
+                BEGIN
+                    SELECT RAISE(FAIL, 'Only one row is allowed in this table.');
+                END;
+            ''')
+            cursor.execute('''
+                CREATE TRIGGER prevent_row_deletion
+                BEFORE DELETE ON CurrentUser
+                FOR EACH ROW
+                WHEN (old.id = 0)
+                BEGIN
+                    SELECT RAISE(FAIL, 'Deletion of this row is not allowed.');
+                END;
+            ''')
+            # Insert into CurrentUser Table
+            cursor.execute('''
+                INSERT INTO CurrentUser (user_id, username, email, current_jwt, current_jwt_time)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (0, "", "", "", datetime.now() - datetime.timedelta(days=1)))
+            
+            # Users Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Users (
                     id INTEGER PRIMARY KEY,
                     username TEXT UNIQUE NOT NULL,
                     email TEXT UNIQUE NOT NULL,
@@ -47,13 +72,13 @@ class DatabaseManager:
                     weak_shared_secret TEXT,
                     shared_secret TEXT,
                     secure_shared_secret TEXT,
-                    FOREIGN KEY(user_id) REFERENCES User(id)
+                    FOREIGN KEY(user_id) REFERENCES Users(id)
                 )
             ''')
 
             # Account Table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS Account (
+                CREATE TABLE IF NOT EXISTS Accounts (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER,
                     account_type TEXT CHECK(account_type IN ('Student', 'Teacher', 'Employee')),
@@ -65,7 +90,7 @@ class DatabaseManager:
                     birth_date DATE,
                     gender TEXT,
                     last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(user_id) REFERENCES User(id)
+                    FOREIGN KEY(user_id) REFERENCES Users(id)
                 )
             ''')
             
@@ -81,7 +106,7 @@ class DatabaseManager:
                     gender_preference TEXT,
                     event_ids TEXT,
                     last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(account_id) REFERENCES Account(id)
+                    FOREIGN KEY(account_id) REFERENCES Accounts(id)
                 )
             ''')
             
@@ -97,7 +122,7 @@ class DatabaseManager:
                     event_ids TEXT,
                     available_times TEXT,
                     last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(account_id) REFERENCES Account(id)
+                    FOREIGN KEY(account_id) REFERENCES Accounts(id)
                 )
             ''')
             
@@ -108,12 +133,48 @@ class DatabaseManager:
                     rank TEXT,
                     department TEXT,
                     last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(account_id) REFERENCES Account(id)
+                    FOREIGN KEY(account_id) REFERENCES Accounts(id)
                 )
             ''')
             
+            # Settings
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Settings (
+                    account_id INTEGER,
+                    setting_geometry TEXT,
+                    setting_style TEXT CHECK(setting_style IN ('Classic', 'Normal')),
+                    setting_theme TEXT CHECK(setting_theme IN ('Light', 'Dark')),
+                    last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES Accounts(id)
+                );
+            ''')
+            
+            # Insert a special entry for the unknown user with NULL values
+            unknown_password = GeneratePasswords.generate_ratio_based_password_v1(length=16, letters_ratio=0.4, numbers_ratio=0.3, punctuations_ratio=0.2, unicode_ratio=0.1)
+            password_hash, salt = hash_password(unknown_password)
+            
             # Unknown User Entry
-            cursor.execute('''''')
+            cursor.execute('''
+                INSERT INTO Users (username, email, password_hash, salt)
+                VALUES (?, ?, ?, ?)
+            ''', (None, None, password_hash, salt))
+            
+            # Create unknown user account
+            cursor.execute('''
+                INSERT INTO Accounts (user_id, account_type, first_name, last_name, email)
+                VALUES (?, 'Student', ?, ?, ?)
+            ''', (0, None, None, None))
+            
+            # Trigger to prevent deletion of the unknown user's account
+            cursor.execute('''
+                CREATE TRIGGER prevent_unknown_user_deletion
+                BEFORE DELETE ON Users
+                FOR EACH ROW
+                WHEN (old.id = ?)
+                BEGIN
+                    SELECT RAISE(FAIL, 'Deletion of the unknown user is not allowed.');
+                END;
+            ''', (0,))
             
     def register_client(self, email):
         response = requests.get("https://127.0.0.1:5000/register_client", params={"email": email}, verify=False)
