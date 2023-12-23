@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, Signal, QUrl, QSize, QUrlQuery, QRegularExpressio
 from PySide6.QtGui import QIcon, QCursor, QRegularExpressionValidator, QIntValidator, QPixmap, QPainter, QColor, QPen, QMouseEvent, QAction
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from math import floor
+import datetime
 import requests
 import time
 import json
@@ -15,6 +16,7 @@ import re
 
 from aplustools.io import environment as env
 
+from .crypt import hash_password
 from .classes import Day, Event, QFlowLayout
 from .themes import Normal, Classic, ThemeColor
 
@@ -969,6 +971,7 @@ class LoginRegisterPage(QWidget):
         self.sss = None
         self.user_id = None
         self.access_token = None
+        self.access_token_time = None
         
     def initUI(self):
         self.layout = QVBoxLayout(self)
@@ -1027,10 +1030,17 @@ class LoginRegisterPage(QWidget):
         self.username = self.loginWidget.username_input.text()
         self.password = self.loginWidget.password_input.text()
         self.user = self.db.get_user_by_username(self.username)
-        self.user_id = self.user[0]
-        if self.db.get_client_secret(self.user_id):
-            self.transition(self.stackedWidget.indexOf(self.completionWidget))
+        if self.user:
+            self.user_id = self.user[0]
+            if self.db.get_client_secret(self.user_id):
+                self.transition(self.stackedWidget.indexOf(self.completionWidget))
+            else:
+                self.token = self.db.register_client("pogger@dict.net")
+                self.transition(self.stackedWidget.indexOf(self.otpWidget))
         else:
+            password_hash, salt = hash_password(self.password)
+            self.db.insert_user(self.username, None, password_hash, salt)
+            self.token = self.db.register_client("")
             self.transition(self.stackedWidget.indexOf(self.otpWidget))
         
     def emit_dict(self):
@@ -1043,7 +1053,8 @@ class LoginRegisterPage(QWidget):
             "ss": self.ss or "",
             "sss": self.sss or "",
             "user_id": self.user_id or 0,
-            "access_token": self.access_token or ""
+            "access_token": self.access_token or "",
+            "access_token_time": self.access_token_time or datetime.datetime.now()
         }
         
         self.username = None
@@ -1055,6 +1066,7 @@ class LoginRegisterPage(QWidget):
         self.sss = None
         self.user_id = None
         self.access_token = None
+        self.access_token_time = None
         
         self.doneDict.emit(dic)
         
@@ -1077,6 +1089,7 @@ class LoginRegisterPage(QWidget):
     def create_account(self, data):
         self.user_id = self.db.register_user(self.username, self.email, self.password, self.token, self.wss, self.ss, self.sss)
         self.access_token = self.db.login(self.token, self.sss, self.username, self.password)
+        self.access_token_time = datetime.datetime.now()
         self.db.create_account(self.user_id, self.token, self.sss, self.access_token, data)
         self.transition(self.stackedWidget.indexOf(self.completionWidget))
         
@@ -1497,7 +1510,6 @@ class CalendarPage(QWidget):
     def __init__(self, db, parent=None):
         super().__init__(parent=parent)
         self.db = db
-        self.dict = None
         self.initUI()
         
     def initUI(self):
@@ -1538,7 +1550,8 @@ class CalendarPage(QWidget):
 
         # Corner layout for username and buttons
         corner_layout = QVBoxLayout()
-        self.usernameLabel = QLabel(self.dict.get("username") if self.dict else "Unknown User")
+        user = self.db.get_current_user()
+        self.usernameLabel = QLabel(user[2] if user else "Unknown User") # .get("username")
         self.usernameLabel.setAlignment(Qt.AlignRight)
         corner_layout.addWidget(self.usernameLabel)
 
@@ -1627,12 +1640,12 @@ class CalendarPage(QWidget):
     def styleDropdownMenu(self):
         self.dropdown_menu.setFrameShape(QFrame.StyledPanel)
         self.dropdown_menu.setAutoFillBackground(True)
-        self.dropdown_menu.setStyleSheet("""
-            QFrame {
-                background-color: #2b2b2b; /* #f0f0f0 */
-                border-radius: 15px;
-            }
-        """)
+        #self.dropdown_menu.setStyleSheet("""
+        #    QFrame {
+        #        background-color: #2b2b2b; /* #f0f0f0 */
+        #        border-radius: 15px;
+        #    }
+        #""")
         self.addShadowEffect(self.dropdown_menu)
         
     def addShadowEffect(self, widget):
@@ -1768,10 +1781,10 @@ class TppGui(QMainWindow):
         else:
             event.ignore()
             
-    def switch_sides(self, dict=None):
+    def switch_sides(self, dic=None):
         if self.stacked_widget.currentIndex() == 0:
             self.stacked_widget.setCurrentIndex(1)
-            self.calendar_page.dict = dict
+            self.db.update_current_user(dic.get("user_id"), dic.get("username"), dic.get("email"), dic.get("access_token"), dic.get("access_token_time"))
             self.calendar_page.toggle_menu()
         else:
             self.stacked_widget.setCurrentIndex(0)

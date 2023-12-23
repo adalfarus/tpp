@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import json
 from aplustools.utils.genpass import GeneratePasswords # Doesn't work for python 3.9
@@ -19,17 +19,20 @@ class DatabaseManager:
             # Current User
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS CurrentUser (
+                    id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
                     username TEXT NOT NULL,
-                    email TEXT NOT NULL,
+                    email TEXT,
                     current_jwt TEXT NOT NULL,
                     current_jwt_time DATETIME NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES Users(id)
                 )
             ''')
+            conn.commit()
+            
             # Current user table triggers
             cursor.execute('''
-                CREATE TRIGGER prevent_multiple_rows
+                CREATE TRIGGER IF NOT EXISTS prevent_multiple_rows
                 BEFORE INSERT ON CurrentUser
                 WHEN (SELECT COUNT(*) FROM CurrentUser) >= 1
                 BEGIN
@@ -37,7 +40,7 @@ class DatabaseManager:
                 END;
             ''')
             cursor.execute('''
-                CREATE TRIGGER prevent_row_deletion
+                CREATE TRIGGER IF NOT EXISTS prevent_row_deletion
                 BEFORE DELETE ON CurrentUser
                 FOR EACH ROW
                 WHEN (old.id = 0)
@@ -46,17 +49,18 @@ class DatabaseManager:
                 END;
             ''')
             # Insert into CurrentUser Table
-            cursor.execute('''
-                INSERT INTO CurrentUser (user_id, username, email, current_jwt, current_jwt_time)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (0, "", "", "", datetime.now() - datetime.timedelta(days=1)))
+            if not self.get_current_user():
+                cursor.execute('''
+                    INSERT INTO CurrentUser (id, user_id, username, email, current_jwt, current_jwt_time)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (0, 0, "", "", "", datetime.now() - timedelta(days=1)))
             
-            # Users Table
+            # Users Table # In the future get email from server
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Users (
                     id INTEGER PRIMARY KEY,
                     username TEXT UNIQUE NOT NULL,
-                    email TEXT UNIQUE NOT NULL,
+                    email TEXT UNIQUE,
                     password_hash TEXT NOT NULL,
                     salt TEXT NOT NULL,
                     last_modified DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -149,15 +153,18 @@ class DatabaseManager:
                 );
             ''')
             
+            conn.commit()
+            
             # Insert a special entry for the unknown user with NULL values
-            unknown_password = GeneratePasswords.generate_ratio_based_password_v1(length=16, letters_ratio=0.4, numbers_ratio=0.3, punctuations_ratio=0.2, unicode_ratio=0.1)
+            unknown_password = GeneratePasswords.generate_ratio_based_password_v1(length=16, letters_ratio=0.4, numbers_ratio=0.3, punctuations_ratio=0.3, unicode_ratio=0)
             password_hash, salt = hash_password(unknown_password)
             
             # Unknown User Entry
-            cursor.execute('''
-                INSERT INTO Users (username, email, password_hash, salt)
-                VALUES (?, ?, ?, ?)
-            ''', (None, None, password_hash, salt))
+            if not self.get_user(0):
+                cursor.execute('''
+                    INSERT INTO Users (id, username, email, password_hash, salt)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (0, "None", "None", password_hash, salt))
             
             # Create unknown user account
             cursor.execute('''
@@ -167,14 +174,14 @@ class DatabaseManager:
             
             # Trigger to prevent deletion of the unknown user's account
             cursor.execute('''
-                CREATE TRIGGER prevent_unknown_user_deletion
+                CREATE TRIGGER IF NOT EXISTS prevent_unknown_user_deletion
                 BEFORE DELETE ON Users
                 FOR EACH ROW
-                WHEN (old.id = ?)
+                WHEN (old.id = 0)
                 BEGIN
                     SELECT RAISE(FAIL, 'Deletion of the unknown user is not allowed.');
                 END;
-            ''', (0,))
+            ''')
             
     def register_client(self, email):
         response = requests.get("https://127.0.0.1:5000/register_client", params={"email": email}, verify=False)
@@ -200,7 +207,7 @@ class DatabaseManager:
                 password_hash, salt = hash_password(password)
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO User (username, email, password_hash, salt) 
+                    INSERT INTO Users (username, email, password_hash, salt) 
                     VALUES (?, ?, ?, ?)
                 ''', (username, email, password_hash, salt))  # , token, shared_secret, secure_shared_secret
                 user_id = cursor.lastrowid
@@ -235,7 +242,7 @@ class DatabaseManager:
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO User (username, email, password_hash, salt) 
+                INSERT INTO Users (username, email, password_hash, salt) 
                 VALUES (?, ?, ?, ?)
             ''', (username, email, password_hash, salt))
             return cursor.lastrowid
@@ -243,7 +250,7 @@ class DatabaseManager:
     def get_user(self, user_id):
         with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM User WHERE id = ?', (user_id,))
+            cursor.execute('SELECT * FROM Users WHERE id = ?', (user_id,))
             return cursor.fetchone()
 
     def update_user(self, user_id, **kwargs):
@@ -251,17 +258,17 @@ class DatabaseManager:
             cursor = conn.cursor()
             columns = ', '.join([f"{k} = ?" for k in kwargs])
             values = list(kwargs.values()) + [user_id]
-            cursor.execute(f'UPDATE User SET {columns} WHERE id = ?', values)
+            cursor.execute(f'UPDATE Users SET {columns} WHERE id = ?', values)
 
     def delete_user(self, user_id):
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM User WHERE id = ?', (user_id,))
+            cursor.execute('DELETE FROM Users WHERE id = ?', (user_id,))
 
     def get_user_by_username(self, username):
         with closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM User WHERE username = ?', (username,))
+            cursor.execute('SELECT * FROM Users WHERE username = ?', (username,))
             return cursor.fetchone()
 
     def get_client_secret(self, user_id):
@@ -294,7 +301,7 @@ class DatabaseManager:
             with closing(sqlite3.connect(self.db_path)) as conn, conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO Account (user_id, account_type, first_name, last_name, email, phone, address, birth_date, gender, last_modified)
+                    INSERT INTO Accounts (user_id, account_type, first_name, last_name, email, phone, address, birth_date, gender, last_modified)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (user_id, account_data["account_type"], account_data["first_name"], account_data["last_name"],
                     account_data["email"], account_data["phone"], account_data["address"], account_data["birth_date"],
@@ -308,7 +315,7 @@ class DatabaseManager:
         with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO User (username, email, password_hash, salt) 
+                INSERT INTO Users (username, email, password_hash, salt) 
                 VALUES (?, ?, ?, ?)
             ''', (user_data["username"], user_data["email"], user_data["encrypted_password"], 'salt'))  # Replace 'salt' with actual salt
             return cursor.lastrowid
@@ -329,8 +336,8 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT StudentDetails.* 
                 FROM StudentDetails
-                JOIN Account ON StudentDetails.account_id = Account.id
-                WHERE Account.user_id = ?
+                JOIN Accounts ON StudentDetails.account_id = Accounts.id
+                WHERE Accounts.user_id = ?
             ''', (user_id,))
             student_details = cursor.fetchone()
             return student_details if student_details else None
@@ -352,3 +359,16 @@ class DatabaseManager:
             populated_list.append(row)
 
         return populated_list
+
+    def update_current_user(self, user_id, username, email, current_jwt, current_jwt_time):
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE CurrentUser SET user_id = ?, username = ?, email = ?, current_jwt = ?, current_jwt_time = ? WHERE id = ?', 
+                           (user_id, username, email, current_jwt, current_jwt_time, 0))
+
+    def get_current_user(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM CurrentUser WHERE id = ?', (0,))
+            return cursor.fetchone()
+        
